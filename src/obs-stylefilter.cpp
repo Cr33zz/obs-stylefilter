@@ -16,7 +16,7 @@
 //OBS_DECLARE_MODULE()
 //OBS_MODULE_USE_DEFAULT_LOCALE("coreaudio-encoder", "en-US")
 
-struct async_delay_data
+struct style_data
 {
     obs_source_t* context;
 
@@ -37,13 +37,13 @@ struct async_delay_data
     bool reset_audio;
 };
 
-static const char* async_delay_filter_name(void *unused)
+static const char* style_filter_name(void *unused)
 {
     UNUSED_PARAMETER(unused);
     return "StyleFilter";
 }
 
-static void free_video_data(async_delay_data *filter,
+static void free_video_data(style_data *filter,
     obs_source_t *parent)
 {
     while (filter->video_frames.size)
@@ -62,7 +62,7 @@ static inline void free_audio_packet(obs_audio_data *audio)
     memset(audio, 0, sizeof(*audio));
 }
 
-static void free_audio_data(async_delay_data *filter)
+static void free_audio_data(style_data *filter)
 {
     while (filter->audio_frames.size) {
         obs_audio_data audio;
@@ -73,9 +73,9 @@ static void free_audio_data(async_delay_data *filter)
     }
 }
 
-static void async_delay_filter_update(void *data, obs_data_t *settings)
+static void style_filter_update(void *data, obs_data_t *settings)
 {
-    async_delay_data* filter = (async_delay_data*)data;
+    style_data* filter = (style_data*)data;
     uint64_t new_interval =
         (uint64_t)obs_data_get_int(settings, SETTING_DELAY_MS) *
         MSEC_TO_NSEC;
@@ -90,14 +90,14 @@ static void async_delay_filter_update(void *data, obs_data_t *settings)
     filter->audio_delay_reached = false;
 }
 
-static void* async_delay_filter_create(obs_data_t *settings,
+static void* style_filter_create(obs_data_t *settings,
     obs_source_t *context)
 {
-    async_delay_data *filter = (async_delay_data*)bzalloc(sizeof(async_delay_data));
+    style_data *filter = (style_data*)bzalloc(sizeof(style_data));
     obs_audio_info oai;
 
     filter->context = context;
-    async_delay_filter_update(filter, settings);
+    style_filter_update(filter, settings);
 
     obs_get_audio_info(&oai);
     filter->samplerate = oai.samples_per_sec;
@@ -105,9 +105,9 @@ static void* async_delay_filter_create(obs_data_t *settings,
     return filter;
 }
 
-static void async_delay_filter_destroy(void *data)
+static void style_filter_destroy(void *data)
 {
-    async_delay_data *filter = (async_delay_data*)data;
+    style_data *filter = (style_data*)data;
 
     free_audio_packet(&filter->audio_output);
     circlebuf_free(&filter->video_frames);
@@ -115,7 +115,7 @@ static void async_delay_filter_destroy(void *data)
     bfree(data);
 }
 
-static obs_properties_t *async_delay_filter_properties(void *data)
+static obs_properties_t *style_filter_properties(void *data)
 {
     obs_properties_t *props = obs_properties_create();
 
@@ -126,9 +126,9 @@ static obs_properties_t *async_delay_filter_properties(void *data)
     return props;
 }
 
-static void async_delay_filter_remove(void *data, obs_source_t *parent)
+static void style_filter_remove(void *data, obs_source_t *parent)
 {
-    async_delay_data *filter = (async_delay_data*)data;
+    style_data *filter = (style_data*)data;
 
     free_video_data(filter, parent);
     free_audio_data(filter);
@@ -143,9 +143,9 @@ static inline bool is_timestamp_jump(uint64_t ts, uint64_t prev_ts)
     return ts < prev_ts || (ts - prev_ts) > SEC_TO_NSEC;
 }
 
-static obs_source_frame* async_delay_filter_video(void *data, obs_source_frame *frame)
+static obs_source_frame* style_filter_video(void *data, obs_source_frame *frame)
 {
-    async_delay_data *filter = (async_delay_data*)data;
+    style_data *filter = (style_data*)data;
     obs_source_t *parent = obs_filter_get_parent(filter->context);
     obs_source_frame *output;
     uint64_t cur_interval;
@@ -184,9 +184,9 @@ static obs_source_frame* async_delay_filter_video(void *data, obs_source_frame *
 
 #ifdef DELAY_AUDIO
 static obs_audio_data *
-async_delay_filter_audio(void *data, obs_audio_data *audio)
+style_filter_audio(void *data, obs_audio_data *audio)
 {
-    async_delay_data *filter = data;
+    style_data *filter = data;
     obs_audio_data cached = *audio;
     uint64_t cur_interval;
     uint64_t duration;
@@ -231,44 +231,58 @@ async_delay_filter_audio(void *data, obs_audio_data *audio)
 }
 #endif
 
-obs_source_info async_delay_filter = (async_delay_filter = obs_source_info(),
-    async_delay_filter.id = "async_delay_filter",
-    async_delay_filter.type = OBS_SOURCE_TYPE_FILTER,
-    async_delay_filter.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_ASYNC,
-    async_delay_filter.get_name = async_delay_filter_name,
-    async_delay_filter.create = async_delay_filter_create,
-    async_delay_filter.destroy = async_delay_filter_destroy,
-    async_delay_filter.update = async_delay_filter_update,
-    async_delay_filter.get_properties = async_delay_filter_properties,
-    async_delay_filter.filter_video = async_delay_filter_video,
+obs_source_info style_filter = (style_filter = obs_source_info(),
+    style_filter.id = "style_filter",
+    style_filter.type = OBS_SOURCE_TYPE_FILTER,
+    style_filter.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_ASYNC,
+    style_filter.get_name = style_filter_name,
+    style_filter.create = style_filter_create,
+    style_filter.destroy = style_filter_destroy,
+    style_filter.update = style_filter_update,
+    style_filter.get_properties = style_filter_properties,
+    style_filter.filter_video = style_filter_video,
 #ifdef DELAY_AUDIO
-    async_delay_filter.filter_audio = async_delay_filter_audio,
+    style_filter.filter_audio = style_filter_audio,
 #endif
-    async_delay_filter.filter_remove = async_delay_filter_remove,
-    async_delay_filter
+    style_filter.filter_remove = style_filter_remove,
+    style_filter
 );
 
-//obs_source_info async_delay_filter = {
-//    "async_delay_filter",
+OBS_DECLARE_MODULE()
+OBS_MODULE_USE_DEFAULT_LOCALE("obs-stylefilter", "en-US")
+
+bool obs_module_load(void)
+{
+    obs_register_source(&style_filter);
+
+    return true;
+}
+
+void obs_module_unload(void)
+{
+}
+
+//obs_source_info style_filter = {
+//    "style_filter",
 //    OBS_SOURCE_TYPE_FILTER,
 //    OBS_SOURCE_VIDEO | OBS_SOURCE_ASYNC,
-//    async_delay_filter_name,
-//    async_delay_filter_create,
-//    async_delay_filter_destroy,
+//    style_filter_name,
+//    style_filter_create,
+//    style_filter_destroy,
 //    nullptr,
 //    nullptr,
 //    nullptr,
-//    async_delay_filter_properties,
-//    async_delay_filter_update,
+//    style_filter_properties,
+//    style_filter_update,
 //    nullptr,
 //    nullptr,
 //    nullptr,
 //    nullptr,
 //    nullptr,
 //    nullptr,
-//    async_delay_filter_video,
+//    style_filter_video,
 //#ifdef DELAY_AUDIO
-//    async_delay_filter_audio,
+//    style_filter_audio,
 //#endif
-//    async_delay_filter_remove,
+//    style_filter_remove,
 //};
