@@ -1,5 +1,6 @@
 #include <obs-module.h>
 #include <util/circlebuf.h>
+#include <Neuro.h>
 
 #ifndef SEC_TO_NSEC
 #define SEC_TO_NSEC 1000000000ULL
@@ -9,12 +10,12 @@
 #define MSEC_TO_NSEC 1000000ULL
 #endif
 
-#define SETTING_DELAY_MS "delay_ms"
+#define SETTING_ALPHA "alpha"
+#define SETTING_ALPHA_TEXT "Style ratio"
+#define SETTING_DELAY_NAME "delay_ms"
+#define SETTING_DELAY_TEXT "Delay Ms"
 
-#define TEXT_DELAY_MS "DelayMs"
-
-//OBS_DECLARE_MODULE()
-//OBS_MODULE_USE_DEFAULT_LOCALE("coreaudio-encoder", "en-US")
+using namespace Neuro;
 
 struct style_data
 {
@@ -37,32 +38,31 @@ struct style_data
     bool reset_audio;
 };
 
-static const char* style_filter_name(void *unused)
+static const char* style_filter_name(void* unused)
 {
     UNUSED_PARAMETER(unused);
-    return "StyleFilter";
+    return "Style Filter";
 }
 
-static void free_video_data(style_data *filter,
-    obs_source_t *parent)
+static void free_video_data(style_data* filter, obs_source_t* parent)
 {
     while (filter->video_frames.size)
     {
         obs_source_frame* frame;
 
-        circlebuf_pop_front(&filter->video_frames, &frame, sizeof(obs_source_frame));
+        circlebuf_pop_front(&filter->video_frames, &frame, sizeof(obs_source_frame*));
         obs_source_release_frame(parent, frame);
     }
 }
 
-static inline void free_audio_packet(obs_audio_data *audio)
+static inline void free_audio_packet(obs_audio_data* audio)
 {
     for (size_t i = 0; i < MAX_AV_PLANES; i++)
         bfree(audio->data[i]);
     memset(audio, 0, sizeof(*audio));
 }
 
-static void free_audio_data(style_data *filter)
+static void free_audio_data(style_data* filter)
 {
     while (filter->audio_frames.size) {
         obs_audio_data audio;
@@ -73,11 +73,11 @@ static void free_audio_data(style_data *filter)
     }
 }
 
-static void style_filter_update(void *data, obs_data_t *settings)
+static void style_filter_update(void* data, obs_data_t* settings)
 {
     style_data* filter = (style_data*)data;
     uint64_t new_interval =
-        (uint64_t)obs_data_get_int(settings, SETTING_DELAY_MS) *
+        (uint64_t)obs_data_get_int(settings, SETTING_DELAY_NAME)* 
         MSEC_TO_NSEC;
 
     if (new_interval < filter->interval)
@@ -90,10 +90,10 @@ static void style_filter_update(void *data, obs_data_t *settings)
     filter->audio_delay_reached = false;
 }
 
-static void* style_filter_create(obs_data_t *settings,
-    obs_source_t *context)
+static void* style_filter_create(obs_data_t* settings,
+    obs_source_t* context)
 {
-    style_data *filter = (style_data*)bzalloc(sizeof(style_data));
+    style_data* filter = (style_data*)bzalloc(sizeof(style_data));
     obs_audio_info oai;
 
     filter->context = context;
@@ -105,9 +105,9 @@ static void* style_filter_create(obs_data_t *settings,
     return filter;
 }
 
-static void style_filter_destroy(void *data)
+static void style_filter_destroy(void* data)
 {
-    style_data *filter = (style_data*)data;
+    style_data* filter = (style_data*)data;
 
     free_audio_packet(&filter->audio_output);
     circlebuf_free(&filter->video_frames);
@@ -115,20 +115,21 @@ static void style_filter_destroy(void *data)
     bfree(data);
 }
 
-static obs_properties_t *style_filter_properties(void *data)
+static obs_properties_t* style_filter_properties(void* data)
 {
-    obs_properties_t *props = obs_properties_create();
-
-    obs_property_t *p = obs_properties_add_int(props, SETTING_DELAY_MS, TEXT_DELAY_MS, 0, 20000, 1);
+    obs_properties_t* props = obs_properties_create();
+    
+    obs_properties_add_float(props, SETTING_ALPHA, SETTING_ALPHA_TEXT, 0, 1, 0.01);
+    obs_property_t* p = obs_properties_add_int(props, SETTING_DELAY_NAME, SETTING_DELAY_TEXT, 0, 20000, 1);
     obs_property_int_set_suffix(p, " ms");
 
     UNUSED_PARAMETER(data);
     return props;
 }
 
-static void style_filter_remove(void *data, obs_source_t *parent)
+static void style_filter_remove(void* data, obs_source_t* parent)
 {
-    style_data *filter = (style_data*)data;
+    style_data* filter = (style_data*)data;
 
     free_video_data(filter, parent);
     free_audio_data(filter);
@@ -143,11 +144,11 @@ static inline bool is_timestamp_jump(uint64_t ts, uint64_t prev_ts)
     return ts < prev_ts || (ts - prev_ts) > SEC_TO_NSEC;
 }
 
-static obs_source_frame* style_filter_video(void *data, obs_source_frame *frame)
+static obs_source_frame* style_filter_video(void* data, obs_source_frame* frame)
 {
-    style_data *filter = (style_data*)data;
-    obs_source_t *parent = obs_filter_get_parent(filter->context);
-    obs_source_frame *output;
+    style_data* filter = (style_data*)data;
+    obs_source_t* parent = obs_filter_get_parent(filter->context);
+    obs_source_frame* output;
     uint64_t cur_interval;
 
     if (filter->reset_video ||
@@ -159,17 +160,22 @@ static obs_source_frame* style_filter_video(void *data, obs_source_frame *frame)
 
     filter->last_video_ts = frame->timestamp;
 
-    circlebuf_push_back(&filter->video_frames, &frame,
-        sizeof(obs_source_frame));
-    circlebuf_peek_front(&filter->video_frames, &output,
-        sizeof(obs_source_frame));
+    static bool capture_frame = false;
+
+    if (capture_frame)
+    {
+        Tensor frameT = LoadImage(frame->data[0], frame->width, frame->height, EPixelFormat::RGB);
+        frameT.SaveAsImage("_frame.jpg", false);
+    }
+
+    circlebuf_push_back(&filter->video_frames, &frame, sizeof(obs_source_frame*));
+    circlebuf_peek_front(&filter->video_frames, &output, sizeof(obs_source_frame*));
 
     cur_interval = frame->timestamp - output->timestamp;
     if (!filter->video_delay_reached && cur_interval < filter->interval)
         return NULL;
 
-    circlebuf_pop_front(&filter->video_frames, NULL,
-        sizeof(obs_source_frame));
+    circlebuf_pop_front(&filter->video_frames, NULL, sizeof(obs_source_frame*));
 
     if (!filter->video_delay_reached)
         filter->video_delay_reached = true;
@@ -183,11 +189,11 @@ static obs_source_frame* style_filter_video(void *data, obs_source_frame *frame)
 /* #define DELAY_AUDIO */
 
 #ifdef DELAY_AUDIO
-static obs_audio_data *
-style_filter_audio(void *data, obs_audio_data *audio)
+static obs_audio_data* 
+style_filter_audio(void* data, obs_audio_data* audio)
 {
-    style_data *filter = data;
-    obs_audio_data cached = *audio;
+    style_data* filter = data;
+    obs_audio_data cached =* audio;
     uint64_t cur_interval;
     uint64_t duration;
     uint64_t end_ts;
@@ -261,28 +267,3 @@ bool obs_module_load(void)
 void obs_module_unload(void)
 {
 }
-
-//obs_source_info style_filter = {
-//    "style_filter",
-//    OBS_SOURCE_TYPE_FILTER,
-//    OBS_SOURCE_VIDEO | OBS_SOURCE_ASYNC,
-//    style_filter_name,
-//    style_filter_create,
-//    style_filter_destroy,
-//    nullptr,
-//    nullptr,
-//    nullptr,
-//    style_filter_properties,
-//    style_filter_update,
-//    nullptr,
-//    nullptr,
-//    nullptr,
-//    nullptr,
-//    nullptr,
-//    nullptr,
-//    style_filter_video,
-//#ifdef DELAY_AUDIO
-//    style_filter_audio,
-//#endif
-//    style_filter_remove,
-//};
