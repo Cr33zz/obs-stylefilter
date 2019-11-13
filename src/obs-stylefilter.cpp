@@ -1,19 +1,10 @@
 #include <obs-module.h>
-#include <util/circlebuf.h>
 #include <Neuro.h>
 
-#ifndef SEC_TO_NSEC
-#define SEC_TO_NSEC 1000000000ULL
-#endif
-
-#ifndef MSEC_TO_NSEC
-#define MSEC_TO_NSEC 1000000ULL
-#endif
-
-#define SETTING_ALPHA "alpha"
+#define SETTING_ENABLED_TEXT "Style enabled"
+#define SETTING_ENABLED_NAME "enabled"
 #define SETTING_ALPHA_TEXT "Style ratio"
-#define SETTING_DELAY_NAME "delay_ms"
-#define SETTING_DELAY_TEXT "Delay Ms"
+#define SETTING_ALPHA_NAME "alpha"
 
 using namespace Neuro;
 
@@ -85,45 +76,19 @@ static ModelBase* create_generator_model(TensorLike* input)
     return new Flow(input_o->Outputs(), { c4 }, "generator_model");
 }
 
-static void RGB_2_I420(const uint8_t* rgb, obs_source_frame* frame)
+#define SCALEYUV(v) (((v)+128000)/256000)
+
+static int rcoeff(int y, int u, int v) { return 298082 * y + 0 * u + 408583 * v; }
+static int gcoeff(int y, int u, int v) { return 298082 * y - 100291 * u - 208120 * v; }
+static int bcoeff(int y, int u, int v) { return 298082 * y + 516411 * u + 0 * v; }
+
+int clamp(int vv)
 {
-    uint32_t image_size = frame->width * frame->height;
-    uint32_t upos = 0;
-    uint32_t vpos = 0;
-    uint32_t i = 0;
-
-    for (uint32_t y = 0; y < frame->height; ++y)
-    {
-        if (!(y & 1))
-        {
-            for (size_t x = 0; x < frame->width; x += 2)
-            {
-                uint8_t r = rgb[i], g = rgb[i + 1], b = rgb[i + 2];
-                rgb += 3;
-
-                frame->data[0][i++] = ((66 * r + 129 * g + 25 * b) >> 8) + 16;
-                frame->data[1][upos++] = ((-38 * r + -74 * g + 112 * b) >> 8) + 128;
-                frame->data[2][vpos++] = ((112 * r + -94 * g + -18 * b) >> 8) + 128;
-
-                r = rgb[i];
-                g = rgb[i + 1];
-                b = rgb[i + 2];
-                rgb += 3;
-
-                frame->data[0][i++] = ((66 * r + 129 * g + 25 * b) >> 8) + 16;
-            }
-        }
-        else
-        {
-            for (size_t x = 0; x < frame->width; x += 1)
-            {
-                uint8_t r = rgb[i], g = rgb[i + 1], b = rgb[i + 2];
-                rgb += 3;
-
-                frame->data[0][i++] = ((66 * r + 129 * g + 25 * b) >> 8) + 16;
-            }
-        }
-    }
+    if (vv < 0)
+        return 0;
+    if (vv > 255)
+        return 255;
+    return vv;
 }
 
 static void RGB_2_I420(const Tensor& t, obs_source_frame* frame)
@@ -164,45 +129,35 @@ static void RGB_2_I420(const Tensor& t, obs_source_frame* frame)
     }
 }
 
-#define SCALEYUV(v) (((v)+128000)/256000)
-
-static int rcoeff(int y, int u, int v) { return 298082 * y + 0 * u + 408583 * v; }
-static int gcoeff(int y, int u, int v) { return 298082 * y - 100291 * u - 208120 * v; }
-static int bcoeff(int y, int u, int v) { return 298082 * y + 516411 * u + 0 * v; }
-
-int clamp(int vv)
+static void RGB_2_YUY2(const Tensor& t, obs_source_frame* frame)
 {
-    if (vv < 0)
-        return 0;
-    if (vv > 255)
-        return 255;
-    return vv;
-}
-
-static void I420_2_RGB(const obs_source_frame* frame, uint8_t* rgb)
-{
-    uint8_t* py = frame->data[0];
-    uint8_t* pu = frame->data[1];
-    uint8_t* pv = frame->data[2];
-
-    for (uint32_t j = 0; j < frame->height; ++j)
+    int Y, U, V;
+    int r, g, b;
+    for (uint32_t h = 0; h < frame->height; ++h)
     {
-        for (uint32_t i = 0; i < frame->width; ++i)
+        for (uint32_t w = 0; w < frame->width; w++)
         {
-            int y = py[i] - 16;
-            int u = pu[i / 2] - 128;
-            int v = pv[i / 2] - 128;
-            rgb[0] = clamp(SCALEYUV(rcoeff(y, u, v)));
-            rgb[1] = clamp(SCALEYUV(gcoeff(y, u, v)));
-            rgb[2] = clamp(SCALEYUV(bcoeff(y, u, v)));
-            rgb += 3;
-        }
 
-        py += frame->linesize[0];
-        if (j & 1)
-        {
-            pu += frame->linesize[1];
-            pv += frame->linesize[2];
+            r = (int)t(w, h, 0);
+            g = (int)t(w, h, 1);
+            b = (int)t(w, h, 2);
+
+            Y = clamp((0.257*r) + (0.504*g) + (0.098*b) + 16);
+            U = clamp(-(0.148*r) - (0.291*g) + (0.439*b) + 128);
+            V = clamp((0.439*r) - (0.368*g) - (0.071*b) + 128);
+
+            if ((w & 1) == 0)
+            {
+                frame->data[0][h * frame->linesize[0] + w * 2 + 0] = Y;
+                frame->data[0][h * frame->linesize[0] + w * 2 + 1] = U;
+                frame->data[0][h * frame->linesize[0] + w * 2 + 3] = V;
+            }
+            else
+            {
+                frame->data[0][h * frame->linesize[0] + w * 2 + 0] = Y;
+                frame->data[0][h * frame->linesize[0] + w * 2 - 1] = U;
+                frame->data[0][h * frame->linesize[0] + w * 2 + 1] = V;
+            }
         }
     }
 }
@@ -241,7 +196,7 @@ static void YUY2_2_RGB(const obs_source_frame* frame, Tensor& t)
     for (uint32_t h = 0; h < frame->height; ++h)
     {
         uint32_t w = 0;
-        for (int i = 0; i < frame->width / 2; ++i)
+        for (uint32_t i = 0; i < frame->width / 2; ++i)
         {
             int y0 = p[0];
             int u0 = p[1];
@@ -251,14 +206,14 @@ static void YUY2_2_RGB(const obs_source_frame* frame, Tensor& t)
             int c = y0 - 16;
             int d = u0 - 128;
             int e = v0 - 128;
-            t(w, h, 0) = clamp((298 * c + 409 * e + 128) >> 8); // red
-            t(w, h, 1) = clamp((298 * c - 100 * d - 208 * e + 128) >> 8); // green
-            t(w, h, 2) = clamp((298 * c + 516 * d + 128) >> 8); // blue
+            t(w, h, 0) = (float)clamp((298 * c + 409 * e + 128) >> 8); // red
+            t(w, h, 1) = (float)clamp((298 * c - 100 * d - 208 * e + 128) >> 8); // green
+            t(w, h, 2) = (float)clamp((298 * c + 516 * d + 128) >> 8); // blue
             ++w;
             c = y1 - 16;
-            t(w, h, 0) = clamp((298 * c + 409 * e + 128) >> 8); // red
-            t(w, h, 1) = clamp((298 * c - 100 * d - 208 * e + 128) >> 8); // green
-            t(w, h, 2) = clamp((298 * c + 516 * d + 128) >> 8); // blue
+            t(w, h, 0) = (float)clamp((298 * c + 409 * e + 128) >> 8); // red
+            t(w, h, 1) = (float)clamp((298 * c - 100 * d - 208 * e + 128) >> 8); // green
+            t(w, h, 2) = (float)clamp((298 * c + 516 * d + 128) >> 8); // blue
             ++w;
         }
     }
@@ -267,22 +222,8 @@ static void YUY2_2_RGB(const obs_source_frame* frame, Tensor& t)
 struct style_data
 {
     obs_source_t* context;
-
-    /* contains struct obs_source_frame* */
-    circlebuf video_frames;
-
-    /* stores the audio data */
-    circlebuf audio_frames;
-    obs_audio_data audio_output;
-
-    uint64_t last_video_ts;
-    uint64_t last_audio_ts;
-    uint64_t interval;
-    uint64_t samplerate;
-    bool video_delay_reached;
-    bool audio_delay_reached;
-    bool reset_video;
-    bool reset_audio;
+    bool enabled = false;
+    float alpha = 0.f;
 };
 
 static const char* style_filter_name(void* unused)
@@ -291,62 +232,19 @@ static const char* style_filter_name(void* unused)
     return "Style Filter";
 }
 
-static void free_video_data(style_data* filter, obs_source_t* parent)
-{
-    while (filter->video_frames.size)
-    {
-        obs_source_frame* frame;
-
-        circlebuf_pop_front(&filter->video_frames, &frame, sizeof(obs_source_frame*));
-        obs_source_release_frame(parent, frame);
-    }
-}
-
-static inline void free_audio_packet(obs_audio_data* audio)
-{
-    for (size_t i = 0; i < MAX_AV_PLANES; i++)
-        bfree(audio->data[i]);
-    memset(audio, 0, sizeof(*audio));
-}
-
-static void free_audio_data(style_data* filter)
-{
-    while (filter->audio_frames.size) {
-        obs_audio_data audio;
-
-        circlebuf_pop_front(&filter->audio_frames, &audio,
-            sizeof(obs_audio_data));
-        free_audio_packet(&audio);
-    }
-}
-
 static void style_filter_update(void* data, obs_data_t* settings)
 {
     style_data* filter = (style_data*)data;
-    uint64_t new_interval =
-        (uint64_t)obs_data_get_int(settings, SETTING_DELAY_NAME)* 
-        MSEC_TO_NSEC;
-
-    if (new_interval < filter->interval)
-        free_video_data(filter, obs_filter_get_parent(filter->context));
-
-    filter->reset_audio = true;
-    filter->reset_video = true;
-    filter->interval = new_interval;
-    filter->video_delay_reached = false;
-    filter->audio_delay_reached = false;
+    filter->enabled = (bool)obs_data_get_bool(settings, SETTING_ENABLED_NAME);
+    filter->alpha = (float)obs_data_get_double(settings, SETTING_ALPHA_NAME);
 }
 
 static void* style_filter_create(obs_data_t* settings, obs_source_t* context)
 {
     style_data* filter = (style_data*)bzalloc(sizeof(style_data));
-    obs_audio_info oai;
 
     filter->context = context;
     style_filter_update(filter, settings);
-
-    obs_get_audio_info(&oai);
-    filter->samplerate = oai.samples_per_sec;
 
     Tensor::SetForcedOpMode(GPU);
 
@@ -356,10 +254,6 @@ static void* style_filter_create(obs_data_t* settings, obs_source_t* context)
 static void style_filter_destroy(void* data)
 {
     style_data* filter = (style_data*)data;
-
-    free_audio_packet(&filter->audio_output);
-    circlebuf_free(&filter->video_frames);
-    circlebuf_free(&filter->audio_frames);
     bfree(data);
 }
 
@@ -367,10 +261,9 @@ static obs_properties_t* style_filter_properties(void* data)
 {
     obs_properties_t* props = obs_properties_create();
     
-    obs_properties_add_float(props, SETTING_ALPHA, SETTING_ALPHA_TEXT, 0, 1, 0.01);
-    obs_property_t* p = obs_properties_add_int(props, SETTING_DELAY_NAME, SETTING_DELAY_TEXT, 0, 20000, 1);
-    obs_property_int_set_suffix(p, " ms");
-
+    obs_properties_add_bool(props, SETTING_ENABLED_NAME, SETTING_ENABLED_TEXT);
+    obs_properties_add_float(props, SETTING_ALPHA_NAME, SETTING_ALPHA_TEXT, 0, 1, 0.01);
+    
     UNUSED_PARAMETER(data);
     return props;
 }
@@ -378,39 +271,14 @@ static obs_properties_t* style_filter_properties(void* data)
 static void style_filter_remove(void* data, obs_source_t* parent)
 {
     style_data* filter = (style_data*)data;
-
-    free_video_data(filter, parent);
-    free_audio_data(filter);
-}
-
-/* due to the fact that we need timing information to be consistent in order to
-* measure the current interval of data, if there is an unexpected hiccup or
-* jump with the timestamps, reset the cached delay data and start again to
-* ensure that the timing is consistent */
-static inline bool is_timestamp_jump(uint64_t ts, uint64_t prev_ts)
-{
-    return ts < prev_ts || (ts - prev_ts) > SEC_TO_NSEC;
 }
 
 static obs_source_frame* style_filter_video(void* data, obs_source_frame* frame)
 {
     style_data* filter = (style_data*)data;
     obs_source_t* parent = obs_filter_get_parent(filter->context);
-    obs_source_frame* output;
-    uint64_t cur_interval;
 
-    if (filter->reset_video ||
-        is_timestamp_jump(frame->timestamp, filter->last_video_ts)) {
-        free_video_data(filter, parent);
-        filter->video_delay_reached = false;
-        filter->reset_video = false;
-    }
-
-    filter->last_video_ts = frame->timestamp;
-
-    static bool capture_frame = false;
-
-    if (capture_frame)
+    if (filter->enabled)
     {
         if (!generator)
         {
@@ -420,8 +288,6 @@ static obs_source_frame* style_filter_video(void* data, obs_source_frame* frame)
             generator->LoadWeights("e:/mosaic_weights.h5", false, true);
         }
 
-        /*vector<uint8_t> rgb_data;
-        rgb_data.resize(frame->width * frame->height * 3);*/
         Tensor frameData(Shape(frame->width, frame->height, 3));
         frameData.OverrideHost();
 
@@ -430,100 +296,22 @@ static obs_source_frame* style_filter_video(void* data, obs_source_frame* frame)
         else if (frame->format == VIDEO_FORMAT_YUY2)
             YUY2_2_RGB(frame, frameData);
 
-        frameData.SaveAsImage("e:/_frame.jpg", false);
+        //frameData.SaveAsImage("e:/_frame.jpg", false);
 
         auto results = Session::Default()->Run({ stylizedContentPre }, { { input, &frameData } });
         auto frameDataStylized = *results[0];
         VGG16::DeprocessImage(frameDataStylized, NCHW);
 
-        frameDataStylized.SaveAsImage("e:/_frame_s.jpg", false);
+        //frameDataStylized.SaveAsImage("e:/_frame_s.jpg", false);
 
         if (frame->format == VIDEO_FORMAT_I420)
             RGB_2_I420(frameDataStylized, frame);
-        /*else if (frame->format == VIDEO_FORMAT_YUY2)
-            RGB_2_YUY2(frame, frameData);*/
-
-        /*Tensor frameT = LoadImage(&rgb_data[0], frame->width, frame->height, EPixelFormat::RGB);
-        frameT.SaveAsImage("e:/_frame.jpg", false);
-
-        static Tensor noise = Uniform::Random(-50, 50, frameT.GetShape());
-
-        frameT.Add(noise);*/
-
-        /*for (size_t i = 0; i < rgb_data.size(); ++i)
-            rgb_data[i] = clamp(rgb_data[i] + GlobalRng().Next(-50, 50));
-
-        RGB_2_I420(&rgb_data[0], frame);*/
+        else if (frame->format == VIDEO_FORMAT_YUY2)
+            RGB_2_YUY2(frameDataStylized, frame);
     }
 
-    circlebuf_push_back(&filter->video_frames, &frame, sizeof(obs_source_frame*));
-    circlebuf_peek_front(&filter->video_frames, &output, sizeof(obs_source_frame*));
-
-    cur_interval = frame->timestamp - output->timestamp;
-    if (!filter->video_delay_reached && cur_interval < filter->interval)
-        return NULL;
-
-    circlebuf_pop_front(&filter->video_frames, NULL, sizeof(obs_source_frame*));
-
-    if (!filter->video_delay_reached)
-        filter->video_delay_reached = true;
-
-    return output;
+    return frame;
 }
-
-/* NOTE: Delaying audio shouldn't be necessary because the audio subsystem will
-* automatically sync audio to video frames */
-
-/* #define DELAY_AUDIO */
-
-#ifdef DELAY_AUDIO
-static obs_audio_data* 
-style_filter_audio(void* data, obs_audio_data* audio)
-{
-    style_data* filter = data;
-    obs_audio_data cached =* audio;
-    uint64_t cur_interval;
-    uint64_t duration;
-    uint64_t end_ts;
-
-    if (filter->reset_audio ||
-        is_timestamp_jump(audio->timestamp, filter->last_audio_ts)) {
-        free_audio_data(filter);
-        filter->audio_delay_reached = false;
-        filter->reset_audio = false;
-    }
-
-    filter->last_audio_ts = audio->timestamp;
-
-    duration = (uint64_t)audio->frames * SEC_TO_NSEC / filter->samplerate;
-    end_ts = audio->timestamp + duration;
-
-    for (size_t i = 0; i < MAX_AV_PLANES; i++) {
-        if (!audio->data[i])
-            break;
-
-        cached.data[i] =
-            bmemdup(audio->data[i], audio->frames * sizeof(float));
-    }
-
-    free_audio_packet(&filter->audio_output);
-
-    circlebuf_push_back(&filter->audio_frames, &cached, sizeof(cached));
-    circlebuf_peek_front(&filter->audio_frames, &cached, sizeof(cached));
-
-    cur_interval = end_ts - cached.timestamp;
-    if (!filter->audio_delay_reached && cur_interval < filter->interval)
-        return NULL;
-
-    circlebuf_pop_front(&filter->audio_frames, NULL, sizeof(cached));
-    memcpy(&filter->audio_output, &cached, sizeof(cached));
-
-    if (!filter->audio_delay_reached)
-        filter->audio_delay_reached = true;
-
-    return &filter->audio_output;
-}
-#endif
 
 obs_source_info style_filter = (style_filter = obs_source_info(),
     style_filter.id = "style_filter",
@@ -535,9 +323,6 @@ obs_source_info style_filter = (style_filter = obs_source_info(),
     style_filter.update = style_filter_update,
     style_filter.get_properties = style_filter_properties,
     style_filter.filter_video = style_filter_video,
-#ifdef DELAY_AUDIO
-    style_filter.filter_audio = style_filter_audio,
-#endif
     style_filter.filter_remove = style_filter_remove,
     style_filter
 );
