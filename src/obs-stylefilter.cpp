@@ -10,6 +10,50 @@
 #define MSEC_TO_NSEC 1000000ULL
 #endif
 
+#define SETTING_ALPHA "alpha"
+#define SETTING_ALPHA_TEXT "Style ratio"
+#define SETTING_DELAY_NAME "delay_ms"
+#define SETTING_DELAY_TEXT "Delay Ms"
+
+using namespace Neuro;
+
+static void RGB_2_I420(const uint8_t* rgb, obs_source_frame* frame)
+{
+    uint32_t image_size = frame->width * frame->height;
+    uint32_t upos = 0;
+    uint32_t vpos = 0;
+    uint32_t i = 0;
+
+    for (uint32_t y = 0; y < frame->height; ++y)
+    {
+        if (!(y & 1))
+        {
+            for (size_t x = 0; x < frame->width; x += 2)
+            {
+                uint8_t r = rgb[3 * i], g = rgb[3 * i + 1], b = rgb[3 * i + 2];
+
+                frame->data[0][i++] = ((66 * r + 129 * g + 25 * b) >> 8) + 16;
+                frame->data[1][upos++] = ((-38 * r + -74 * g + 112 * b) >> 8) + 128;
+                frame->data[2][vpos++] = ((112 * r + -94 * g + -18 * b) >> 8) + 128;
+
+                r = rgb[3 * i];
+                g = rgb[3 * i + 1];
+                b = rgb[3 * i + 2];
+
+                frame->data[0][i++] = ((66 * r + 129 * g + 25 * b) >> 8) + 16;
+            }
+        }
+        else
+        {
+            for (size_t x = 0; x < frame->width; x += 1)
+            {
+                uint8_t r = rgb[3 * i], g = rgb[3 * i + 1], b = rgb[3 * i + 2];
+                frame->data[0][i++] = ((66 * r + 129 * g + 25 * b) >> 8) + 16;
+            }
+        }
+    }
+}
+
 #define SCALEYUV(v) (((v)+128000)/256000)
 
 static int rcoeff(int y, int u, int v) { return 298082 * y + 0 * u + 408583 * v; }
@@ -20,17 +64,38 @@ int clamp(int vv)
 {
     if (vv < 0)
         return 0;
-    else if (vv > 255)
+    if (vv > 255)
         return 255;
     return vv;
 }
 
-#define SETTING_ALPHA "alpha"
-#define SETTING_ALPHA_TEXT "Style ratio"
-#define SETTING_DELAY_NAME "delay_ms"
-#define SETTING_DELAY_TEXT "Delay Ms"
+static void I420_2_RGB(const obs_source_frame* frame, uint8_t* rgb)
+{
+    uint8_t* py = frame->data[0];
+    uint8_t* pu = frame->data[1];
+    uint8_t* pv = frame->data[2];
 
-using namespace Neuro;
+    for (uint32_t j = 0; j < frame->height; ++j)
+    {
+        for (uint32_t i = 0; i < frame->width; ++i)
+        {
+            int y = py[i] - 16;
+            int u = pu[i / 2] - 128;
+            int v = pv[i / 2] - 128;
+            rgb[0] = clamp(SCALEYUV(rcoeff(y, u, v)));
+            rgb[1] = clamp(SCALEYUV(gcoeff(y, u, v)));
+            rgb[2] = clamp(SCALEYUV(bcoeff(y, u, v)));
+            rgb += 3;
+        }
+
+        py += frame->linesize[0];
+        if (j & 1)
+        {
+            pu += frame->linesize[1];
+            pv += frame->linesize[2];
+        }
+    }
+}
 
 struct style_data
 {
@@ -182,34 +247,21 @@ static obs_source_frame* style_filter_video(void* data, obs_source_frame* frame)
         if (frame->format == VIDEO_FORMAT_I420)
         {
             vector<uint8_t> rgb_data;
-            rgb_data.reserve(frame->width * frame->height * 3);
+            rgb_data.resize(frame->width * frame->height * 3);
 
-            uint8_t* py = frame->data[0];
-            uint8_t* pu = frame->data[1];
-            uint8_t* pv = frame->data[2];
+            I420_2_RGB(frame, &rgb_data[0]);
 
-            for (uint32_t j = 0; j < frame->height; ++j)
-            {
-                for (uint32_t i = 0; i < frame->width; ++i)
-                {
-                    int y = py[i] - 16;
-                    int u = pu[i / 2] - 128;
-                    int v = pv[i / 2] - 128;
-                    rgb_data.push_back(clamp(SCALEYUV(rcoeff(y, u, v))));
-                    rgb_data.push_back(clamp(SCALEYUV(gcoeff(y, u, v))));
-                    rgb_data.push_back(clamp(SCALEYUV(bcoeff(y, u, v))));
-                }
-
-                py += frame->linesize[0];
-                if (j & 1)
-                {
-                    pu += frame->linesize[1];
-                    pv += frame->linesize[2];
-                }
-            }
-
-            Tensor frameT = LoadImage(&rgb_data[0], frame->width, frame->height, EPixelFormat::RGB);
+            /*Tensor frameT = LoadImage(&rgb_data[0], frame->width, frame->height, EPixelFormat::RGB);
             frameT.SaveAsImage("e:/_frame.jpg", false);
+
+            static Tensor noise = Uniform::Random(-50, 50, frameT.GetShape());
+
+            frameT.Add(noise);*/
+
+            for (size_t i = 0; i < rgb_data.size(); ++i)
+                rgb_data[i] = clamp(rgb_data[i] + GlobalRng().Next(-50, 50));
+
+            RGB_2_I420(&rgb_data[0], frame);
         }        
     }
 
