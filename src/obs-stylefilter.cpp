@@ -10,6 +10,21 @@
 #define MSEC_TO_NSEC 1000000ULL
 #endif
 
+#define SCALEYUV(v) (((v)+128000)/256000)
+
+static int rcoeff(int y, int u, int v) { return 298082 * y + 0 * u + 408583 * v; }
+static int gcoeff(int y, int u, int v) { return 298082 * y - 100291 * u - 208120 * v; }
+static int bcoeff(int y, int u, int v) { return 298082 * y + 516411 * u + 0 * v; }
+
+int clamp(int vv)
+{
+    if (vv < 0)
+        return 0;
+    else if (vv > 255)
+        return 255;
+    return vv;
+}
+
 #define SETTING_ALPHA "alpha"
 #define SETTING_ALPHA_TEXT "Style ratio"
 #define SETTING_DELAY_NAME "delay_ms"
@@ -164,8 +179,38 @@ static obs_source_frame* style_filter_video(void* data, obs_source_frame* frame)
 
     if (capture_frame)
     {
-        Tensor frameT = LoadImage(frame->data[0], frame->width, frame->height, EPixelFormat::RGB);
-        frameT.SaveAsImage("_frame.jpg", false);
+        if (frame->format == VIDEO_FORMAT_I420)
+        {
+            vector<uint8_t> rgb_data;
+            rgb_data.reserve(frame->width * frame->height * 3);
+
+            uint8_t* py = frame->data[0];
+            uint8_t* pu = frame->data[1];
+            uint8_t* pv = frame->data[2];
+
+            for (uint32_t j = 0; j < frame->height; ++j)
+            {
+                for (uint32_t i = 0; i < frame->width; ++i)
+                {
+                    int y = py[i] - 16;
+                    int u = pu[i / 2] - 128;
+                    int v = pv[i / 2] - 128;
+                    rgb_data.push_back(clamp(SCALEYUV(rcoeff(y, u, v))));
+                    rgb_data.push_back(clamp(SCALEYUV(gcoeff(y, u, v))));
+                    rgb_data.push_back(clamp(SCALEYUV(bcoeff(y, u, v))));
+                }
+
+                py += frame->linesize[0];
+                if (j & 1)
+                {
+                    pu += frame->linesize[1];
+                    pv += frame->linesize[2];
+                }
+            }
+
+            Tensor frameT = LoadImage(&rgb_data[0], frame->width, frame->height, EPixelFormat::RGB);
+            frameT.SaveAsImage("e:/_frame.jpg", false);
+        }        
     }
 
     circlebuf_push_back(&filter->video_frames, &frame, sizeof(obs_source_frame*));

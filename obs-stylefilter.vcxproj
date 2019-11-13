@@ -91,6 +91,9 @@
       <AdditionalLibraryDirectories>deps\OBS\lib;deps\Neuro\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>obs.lib;Neuro.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <PostBuildEvent>
+      <Command>xcopy /y $(TargetPath) "c:/Program Files/obs-studio/obs-plugins/64bit"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -123,6 +126,9 @@
       <AdditionalLibraryDirectories>deps\OBS\lib;deps\Neuro\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>obs.lib;Neuro.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <PostBuildEvent>
+      <Command>xcopy /y $(TargetPath) "c:/Program Files/obs-studio/obs-plugins/64bit"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\obs-stylefilter.cpp" />
