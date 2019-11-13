@@ -234,6 +234,36 @@ static void I420_2_RGB(const obs_source_frame* frame, Tensor& t)
     }
 }
 
+static void YUY2_2_RGB(const obs_source_frame* frame, Tensor& t)
+{
+    uint8_t* p = frame->data[0];
+
+    for (uint32_t h = 0; h < frame->height; ++h)
+    {
+        uint32_t w = 0;
+        for (int i = 0; i < frame->width / 2; ++i)
+        {
+            int y0 = p[0];
+            int u0 = p[1];
+            int y1 = p[2];
+            int v0 = p[3];
+            p += 4;
+            int c = y0 - 16;
+            int d = u0 - 128;
+            int e = v0 - 128;
+            t(w, h, 0) = clamp((298 * c + 409 * e + 128) >> 8); // red
+            t(w, h, 1) = clamp((298 * c - 100 * d - 208 * e + 128) >> 8); // green
+            t(w, h, 2) = clamp((298 * c + 516 * d + 128) >> 8); // blue
+            ++w;
+            c = y1 - 16;
+            t(w, h, 0) = clamp((298 * c + 409 * e + 128) >> 8); // red
+            t(w, h, 1) = clamp((298 * c - 100 * d - 208 * e + 128) >> 8); // green
+            t(w, h, 2) = clamp((298 * c + 516 * d + 128) >> 8); // blue
+            ++w;
+        }
+    }
+}
+
 struct style_data
 {
     obs_source_t* context;
@@ -390,35 +420,40 @@ static obs_source_frame* style_filter_video(void* data, obs_source_frame* frame)
             generator->LoadWeights("e:/mosaic_weights.h5", false, true);
         }
 
+        /*vector<uint8_t> rgb_data;
+        rgb_data.resize(frame->width * frame->height * 3);*/
+        Tensor frameData(Shape(frame->width, frame->height, 3));
+        frameData.OverrideHost();
+
         if (frame->format == VIDEO_FORMAT_I420)
-        {
-            /*vector<uint8_t> rgb_data;
-            rgb_data.resize(frame->width * frame->height * 3);*/
-            Tensor frameData(Shape(frame->width, frame->height, 3));
-            frameData.OverrideHost();
-
             I420_2_RGB(frame, frameData);
+        else if (frame->format == VIDEO_FORMAT_YUY2)
+            YUY2_2_RGB(frame, frameData);
 
-            auto results = Session::Default()->Run({ stylizedContentPre }, { { input, &frameData } });
-            auto frameDataStylized = *results[0];
-            VGG16::DeprocessImage(frameDataStylized, NCHW);
+        frameData.SaveAsImage("e:/_frame.jpg", false);
 
-            frameDataStylized.SaveAsImage("e:/_frame.jpg", false);
+        auto results = Session::Default()->Run({ stylizedContentPre }, { { input, &frameData } });
+        auto frameDataStylized = *results[0];
+        VGG16::DeprocessImage(frameDataStylized, NCHW);
 
+        frameDataStylized.SaveAsImage("e:/_frame_s.jpg", false);
+
+        if (frame->format == VIDEO_FORMAT_I420)
             RGB_2_I420(frameDataStylized, frame);
+        /*else if (frame->format == VIDEO_FORMAT_YUY2)
+            RGB_2_YUY2(frame, frameData);*/
 
-            /*Tensor frameT = LoadImage(&rgb_data[0], frame->width, frame->height, EPixelFormat::RGB);
-            frameT.SaveAsImage("e:/_frame.jpg", false);
+        /*Tensor frameT = LoadImage(&rgb_data[0], frame->width, frame->height, EPixelFormat::RGB);
+        frameT.SaveAsImage("e:/_frame.jpg", false);
 
-            static Tensor noise = Uniform::Random(-50, 50, frameT.GetShape());
+        static Tensor noise = Uniform::Random(-50, 50, frameT.GetShape());
 
-            frameT.Add(noise);*/
+        frameT.Add(noise);*/
 
-            /*for (size_t i = 0; i < rgb_data.size(); ++i)
-                rgb_data[i] = clamp(rgb_data[i] + GlobalRng().Next(-50, 50));
+        /*for (size_t i = 0; i < rgb_data.size(); ++i)
+            rgb_data[i] = clamp(rgb_data[i] + GlobalRng().Next(-50, 50));
 
-            RGB_2_I420(&rgb_data[0], frame);*/
-        }        
+        RGB_2_I420(&rgb_data[0], frame);*/
     }
 
     circlebuf_push_back(&filter->video_frames, &frame, sizeof(obs_source_frame*));
