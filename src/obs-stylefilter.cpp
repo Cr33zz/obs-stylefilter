@@ -285,7 +285,9 @@ static obs_source_frame* style_filter_video(void* data, obs_source_frame* frame)
             input = new Placeholder(Shape(frame->width, frame->height, 3), "input");
             generator = create_generator_model(VGG16::Preprocess(input, NCHW));
             stylizedContentPre = generator->Outputs()[0];
-            generator->LoadWeights("e:/mosaic_weights.h5", false, true);
+
+            string data_path = obs_get_module_data_path(obs_current_module());
+            generator->LoadWeights(data_path + "/mosaic_weights.h5", false, true);
         }
 
         Tensor frameData(Shape(frame->width, frame->height, 3));
