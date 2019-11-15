@@ -8,6 +8,9 @@
 #define SETTING_STYLE_FILE_NAME "Style"
 #define SETTING_STYLE_FILE_TEXT "style"
 
+#define STYLE_IMAGE_WIDTH 512
+#define STYLE_IMAGE_HEIGHT 512
+
 using namespace Neuro;
 
 static ModelBase* generator = nullptr;
@@ -282,6 +285,9 @@ static void YUY2_2_RGB(const obs_source_frame* frame, Tensor& t)
     }
 }
 
+OBS_DECLARE_MODULE()
+OBS_MODULE_USE_DEFAULT_LOCALE("obs-stylefilter", "en-US")
+
 struct style_data
 {
     obs_source_t* context;
@@ -296,17 +302,27 @@ static const char* style_filter_name(void* unused)
     return "Style Filter";
 }
 
+static void style_filter_defaults(obs_data_t *settings)
+{
+    obs_data_set_default_bool(settings, SETTING_ENABLED_NAME, false);
+    obs_data_set_default_double(settings, SETTING_ALPHA_NAME, 1.0);
+    static string default_style = string(obs_get_module_data_path(obs_current_module())) + "/mosaic.jpg";
+    obs_data_set_default_string(settings, SETTING_STYLE_FILE_NAME, default_style.c_str());
+}
+
 static void style_filter_update(void* data, obs_data_t* settings)
 {
     style_data* filter = (style_data*)data;
     filter->enabled = (bool)obs_data_get_bool(settings, SETTING_ENABLED_NAME);
     filter->alpha(0) = (float)obs_data_get_double(settings, SETTING_ALPHA_NAME);
-    filter->style = LoadImage(obs_data_get_string(settings, SETTING_STYLE_FILE_NAME), 512, 512, 512, 512);
+    string style_image = obs_data_get_string(settings, SETTING_STYLE_FILE_NAME);
+    filter->style = LoadImage(style_image, STYLE_IMAGE_WIDTH, STYLE_IMAGE_HEIGHT, STYLE_IMAGE_WIDTH, STYLE_IMAGE_HEIGHT);
 }
 
 static void* style_filter_create(obs_data_t* settings, obs_source_t* context)
 {
-    style_data* filter = (style_data*)bzalloc(sizeof(style_data));
+    //style_data* filter = (style_data*)bzalloc(sizeof(style_data));
+    style_data* filter = new style_data();
 
     filter->context = context;
     style_filter_update(filter, settings);
@@ -319,7 +335,8 @@ static void* style_filter_create(obs_data_t* settings, obs_source_t* context)
 static void style_filter_destroy(void* data)
 {
     style_data* filter = (style_data*)data;
-    bfree(data);
+    delete filter;
+    //bfree(data);
 }
 
 static obs_properties_t* style_filter_properties(void* data)
@@ -328,10 +345,8 @@ static obs_properties_t* style_filter_properties(void* data)
     
     obs_properties_add_bool(props, SETTING_ENABLED_NAME, SETTING_ENABLED_TEXT);
     obs_properties_add_float(props, SETTING_ALPHA_NAME, SETTING_ALPHA_TEXT, 0, 1, 0.01);
-    static string default_style = string(obs_get_module_data_path(obs_current_module())) + "/mosaic.jpg";
-    obs_properties_add_path(props, SETTING_STYLE_FILE_NAME, SETTING_STYLE_FILE_TEXT, OBS_PATH_FILE, "*.jpg", default_style.c_str());
+    obs_properties_add_path(props, SETTING_STYLE_FILE_NAME, SETTING_STYLE_FILE_TEXT, OBS_PATH_FILE, "*.jpg", nullptr);
     
-    UNUSED_PARAMETER(data);
     return props;
 }
 
@@ -349,11 +364,13 @@ static obs_source_frame* style_filter_video(void* data, obs_source_frame* frame)
     {
         if (!generator)
         {
+            string data_path = string(obs_get_module_data_path(obs_current_module())) + "/";
+
             input_content = new Placeholder(Shape(frame->width, frame->height, 3), "input_content");
-            input_style = new Placeholder(Shape(frame->width, frame->height, 3), "input_style");
+            input_style = new Placeholder(Shape(STYLE_IMAGE_WIDTH, STYLE_IMAGE_HEIGHT, 3), "input_style");
             input_alpha = new Placeholder(filter->alpha, "alpha");
 
-            auto vggModel = VGG19::CreateModel(NCHW, Shape(frame->width, frame->height, 3), false, MaxPool, "data/");
+            auto vggModel = VGG19::CreateModel(NCHW, Shape(frame->width, frame->height, 3), false, MaxPool, data_path);
             vggModel->SetTrainable(false);
 
             vector<TensorLike*> styleOutputs = { vggModel->Layer("block1_conv1")->Outputs()[0],
@@ -367,8 +384,8 @@ static obs_source_frame* style_filter_video(void* data, obs_source_frame* frame)
             auto stylePre = VGG16::Preprocess(input_style, NCHW, false);
 
             auto generator = create_generator_model(contentPre, stylePre, input_alpha, vggEncoder);
-            string data_path = obs_get_module_data_path(obs_current_module());
-            generator->LoadWeights(data_path + "/adaptive_weights.h5", false, true);
+            
+            generator->LoadWeights(data_path + "adaptive_weights.h5", false, true);
 
             stylized = generator->Outputs()[0];
 
@@ -413,15 +430,13 @@ obs_source_info style_filter = (style_filter = obs_source_info(),
     style_filter.get_name = style_filter_name,
     style_filter.create = style_filter_create,
     style_filter.destroy = style_filter_destroy,
+    style_filter.get_defaults = style_filter_defaults,
     style_filter.update = style_filter_update,
     style_filter.get_properties = style_filter_properties,
     style_filter.filter_video = style_filter_video,
     style_filter.filter_remove = style_filter_remove,
     style_filter
 );
-
-OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE("obs-stylefilter", "en-US")
 
 bool obs_module_load(void)
 {
